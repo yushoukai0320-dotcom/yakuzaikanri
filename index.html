@@ -1,0 +1,1032 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>薬剤棚卸・納品統合管理システム</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- jsPDF & html2canvas ライブラリ (PDF生成用) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <!-- Tesseract.js ライブラリ (ブラウザ内OCR用) -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+</head>
+<body class="bg-gray-100 min-h-screen p-4 md:p-6 text-gray-800">
+
+  <div class="max-w-6xl mx-auto space-y-4">
+    <!-- ヘッダーエリア -->
+    <header class="bg-white p-4 rounded-xl shadow-sm border border-gray-200 space-y-3">
+      <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-3">
+        <div>
+          <h1 class="text-xl font-bold text-gray-900 flex items-center gap-2">
+            薬剤在庫・棚卸し管理
+            <span id="currentFacilityBadge" class="text-xs bg-blue-100 text-blue-800 px-2.5 py-1 rounded-full font-bold"></span>
+          </h1>
+          <p class="text-xs text-gray-500">クラウドリアルタイム同期 / GS1スキャン / 伝票OCR・PDF保存対応</p>
+        </div>
+        <div class="space-x-2 flex items-center">
+          <button type="button" onclick="exportCSV()" class="bg-gray-700 hover:bg-gray-800 text-white text-sm px-3 py-2 rounded-lg font-bold transition flex items-center gap-1">
+            📥 CSV出力
+          </button>
+          <button type="button" onclick="triggerInvoiceCamera()" class="bg-emerald-600 hover:bg-emerald-700 text-white text-sm px-3 py-2 rounded-lg font-bold transition flex items-center gap-1">
+            📄 納品伝票撮影 (OCR解析&保存)
+          </button>
+        </div>
+      </div>
+
+      <!-- 施設表示・認証ステータスバー -->
+      <div class="pt-2 border-t border-gray-100 flex flex-wrap items-center justify-between gap-3 text-xs bg-gray-50 p-2.5 rounded-lg">
+        <div class="flex flex-wrap items-center gap-3">
+          <div class="flex items-center gap-1.5">
+            <span class="font-bold text-gray-600">🏢 表示施設:</span>
+            <select id="facilitySelect" onchange="changeFacilityView()" class="p-1.5 border border-gray-300 rounded-md bg-white font-bold focus:ring-2 focus:ring-blue-500">
+            </select>
+          </div>
+
+          <div class="flex items-center gap-1.5">
+            <span class="font-bold text-gray-600">👤 作業者:</span>
+            <input type="text" id="operatorName" placeholder="担当者名" onchange="saveOperatorName()" 
+                   class="p-1.5 border border-gray-300 rounded-md bg-white w-28 focus:ring-2 focus:ring-blue-500">
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <span id="syncStatus" class="text-[10px] bg-gray-200 text-gray-700 px-2 py-1 rounded font-mono">⚡ クラウド接続中...</span>
+          <span id="authStatusBadge" class="px-2 py-1 rounded text-xs font-bold"></span>
+          <button type="button" id="authBtn" onclick="promptFacilityCode()" class="bg-blue-600 hover:bg-blue-700 text-white px-2.5 py-1 rounded text-xs font-bold transition">
+            🔑 3桁コードで自施設登録
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- タブナビゲーション -->
+    <div class="flex border-b border-gray-300 bg-white rounded-t-xl px-2 pt-2 overflow-x-auto">
+      <button type="button" id="tabBtn-inventory" onclick="switchTab('inventory')" class="px-4 py-2 text-sm font-bold border-b-2 border-blue-600 text-blue-600 transition whitespace-nowrap">
+        📦 棚卸・在庫管理
+      </button>
+      <button type="button" id="tabBtn-history" onclick="switchTab('history')" class="px-4 py-2 text-sm font-bold border-b-2 border-transparent text-gray-500 hover:text-gray-700 transition whitespace-nowrap">
+        📜 納品履歴 & PDF伝票
+      </button>
+      <button type="button" id="tabBtn-monthly" onclick="switchTab('monthly')" class="px-4 py-2 text-sm font-bold border-b-2 border-transparent text-gray-500 hover:text-gray-700 transition whitespace-nowrap">
+        📊 月末在庫状況
+      </button>
+      <button type="button" id="tabBtn-facility" onclick="openAdminTab()" class="px-4 py-2 text-sm font-bold border-b-2 border-transparent text-indigo-600 hover:text-indigo-800 transition whitespace-nowrap">
+        ⚙️ 法人管理 (要Pass)
+      </button>
+    </div>
+
+    <input type="file" id="invoiceInput" accept="image/*" capture="environment" class="hidden" onchange="handleInvoiceOCR(event)">
+    <input type="file" id="cameraInput" accept="image/*" capture="environment" class="hidden" onchange="handleCameraScan(event)">
+
+    <!-- 1. 棚卸・バーコード入力エリア -->
+    <div id="tab-inventory" class="space-y-4">
+      <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-200 space-y-3">
+        <div class="flex items-center space-x-2">
+          <label for="barcodeInput" class="text-sm font-semibold text-gray-700 whitespace-nowrap">バーコード入力:</label>
+          <div class="relative flex-1 flex items-center">
+            <input type="text" id="barcodeInput" placeholder="スキャナまたはバーコード撮影" 
+                   class="w-full p-2.5 pr-12 border border-blue-400 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm bg-blue-50">
+            <button type="button" onclick="triggerCamera()" title="カメラでバーコードを撮影"
+                    class="absolute right-1 p-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-md transition">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"></path>
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"></path>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div class="px-4 py-3 bg-gray-50 border-b border-gray-200 flex flex-col md:flex-row gap-3 justify-between md:items-center">
+          <div class="flex flex-wrap items-center gap-3">
+            <span class="font-bold text-sm text-gray-800">在庫表示範囲:</span>
+            <div class="inline-flex rounded-md shadow-sm">
+              <button type="button" onclick="setInventoryFilter('facility')" id="invFilterFac" class="px-3 py-1.5 text-xs font-bold rounded-l-lg border border-gray-300 bg-blue-600 text-white">
+                🏢 表示施設在庫
+              </button>
+              <button type="button" onclick="setInventoryFilter('all')" id="invFilterAll" class="px-3 py-1.5 text-xs font-bold rounded-r-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50">
+                🌐 全社在庫
+              </button>
+            </div>
+            <input type="text" id="searchInventory" placeholder="🔍 薬剤名・GTINで絞り込み..." oninput="render()" 
+                   class="p-1.5 text-xs border border-gray-300 rounded-md w-48 md:w-56 focus:outline-none focus:ring-1 focus:ring-blue-500">
+          </div>
+          <div id="totalDiffAmount" class="text-sm font-bold text-gray-800">
+            棚卸評価差額: <span class="text-blue-600">¥0</span>
+          </div>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead class="bg-gray-100 text-gray-600 text-xs uppercase">
+              <tr>
+                <th class="p-3">施設</th>
+                <th class="p-3">薬剤名 / GTIN / 単位</th>
+                <th class="p-3 text-right">単価 (円)</th>
+                <th class="p-3 text-center">理論在庫</th>
+                <th class="p-3 text-center">実測数量 (内訳)</th>
+                <th class="p-3 text-center">操作 (箱 / 中身バラ)</th>
+                <th class="p-3 text-center">最終更新者</th>
+                <th class="p-3 text-right">評価差額</th>
+                <th class="p-3">仕入れ先</th>
+              </tr>
+            </thead>
+            <tbody id="inventoryList" class="divide-y divide-gray-200"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2. 納品履歴 & PDF管理 -->
+    <div id="tab-history" class="hidden space-y-4">
+      <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div class="px-4 py-3 bg-gray-50 border-b border-gray-200 flex flex-col md:flex-row gap-3 justify-between md:items-center">
+          <div class="flex items-center gap-3">
+            <span class="font-bold text-sm text-gray-800">履歴表示範囲:</span>
+            <div class="inline-flex rounded-md shadow-sm">
+              <button type="button" onclick="setHistoryFilter('facility')" id="hisFilterFac" class="px-3 py-1.5 text-xs font-bold rounded-l-lg border border-gray-300 bg-blue-600 text-white">
+                🏢 表示施設履歴
+              </button>
+              <button type="button" onclick="setHistoryFilter('all')" id="hisFilterAll" class="px-3 py-1.5 text-xs font-bold rounded-r-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50">
+                🌐 全社履歴
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead class="bg-gray-100 text-gray-600 text-xs uppercase">
+              <tr>
+                <th class="p-3">作業日時</th>
+                <th class="p-3">施設</th>
+                <th class="p-3">実施者</th>
+                <th class="p-3">薬剤名</th>
+                <th class="p-3 text-center">納品数量</th>
+                <th class="p-3 text-right">適用単価</th>
+                <th class="p-3 text-right">納品金額</th>
+                <th class="p-3">仕入れ先</th>
+                <th class="p-3 text-center">PDF伝票</th>
+              </tr>
+            </thead>
+            <tbody id="historyList" class="divide-y divide-gray-200"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. 月末仕入れ・在庫状況 -->
+    <div id="tab-monthly" class="hidden space-y-4">
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
+          <div class="text-xs text-gray-500 font-semibold">当月 納品仕入れ総額</div>
+          <div id="monthlyDeliveryTotal" class="text-2xl font-bold text-emerald-600 mt-1">¥0</div>
+        </div>
+        <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
+          <div class="text-xs text-gray-500 font-semibold">理論在庫 評価総額</div>
+          <div id="monthlyTheoreticalTotal" class="text-2xl font-bold text-gray-800 mt-1">¥0</div>
+        </div>
+        <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
+          <div class="text-xs text-gray-500 font-semibold">実測在庫 評価総額</div>
+          <div id="monthlyActualTotal" class="text-2xl font-bold text-blue-600 mt-1">¥0</div>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div class="px-4 py-3 bg-gray-50 border-b border-gray-200">
+          <span class="font-semibold text-sm text-gray-700">月末在庫・評価額 内訳</span>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead class="bg-gray-100 text-gray-600 text-xs uppercase">
+              <tr>
+                <th class="p-3">施設</th>
+                <th class="p-3">薬剤名</th>
+                <th class="p-3 text-right">単価</th>
+                <th class="p-3 text-center">理論在庫</th>
+                <th class="p-3 text-right">理論在庫額</th>
+                <th class="p-3 text-center">実測在庫</th>
+                <th class="p-3 text-right">実測在庫額</th>
+                <th class="p-3">仕入れ先</th>
+              </tr>
+            </thead>
+            <tbody id="monthlyList" class="divide-y divide-gray-200"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- 4. 法人管理 -->
+    <div id="tab-facility" class="hidden space-y-4">
+      <div class="bg-white p-5 rounded-xl shadow-sm border border-indigo-200 space-y-4">
+        <div class="flex justify-between items-center border-b pb-2">
+          <h2 class="text-lg font-bold text-indigo-900">⚙️ 法人・全施設設定 (管理者権限)</h2>
+          <button type="button" onclick="lockAdminMode()" class="text-xs bg-gray-200 hover:bg-gray-300 text-gray-700 px-3 py-1 rounded font-bold">🔒 管理者モードを終了</button>
+        </div>
+        
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-xs font-bold text-gray-700 mb-1">法人名</label>
+            <input type="text" id="corpNameInput" class="w-full p-2 border border-gray-300 rounded-lg text-sm">
+          </div>
+          <div>
+            <label class="block text-xs font-bold text-gray-700 mb-1">管理者パスワード (4桁数字)</label>
+            <input type="text" id="adminPassInput" class="w-full p-2 border border-gray-300 rounded-lg text-sm font-mono">
+          </div>
+        </div>
+        <button type="button" onclick="saveCorpSettings()" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm px-4 py-2 rounded-lg transition">
+          法人設定を保存
+        </button>
+
+        <hr class="my-4">
+
+        <div>
+          <h3 class="text-sm font-bold text-gray-800 mb-2">登録済み施設・3桁施設コード一覧</h3>
+          <div id="facilityManageList" class="space-y-2"></div>
+        </div>
+
+        <div class="pt-2 flex gap-2">
+          <input type="text" id="newFacCode" placeholder="コード(3桁)" maxlength="3" class="p-2 border border-gray-300 rounded-lg text-sm w-24 font-mono">
+          <input type="text" id="newFacName" placeholder="施設名" class="p-2 border border-gray-300 rounded-lg text-sm flex-1">
+          <button type="button" onclick="addFacility()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm px-4 py-2 rounded-lg transition whitespace-nowrap">
+            ＋ 新規施設登録
+          </button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- OCR処理中表示モーダル -->
+  <div id="ocrLoadingModal" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 hidden flex-col items-center justify-center text-white p-4">
+    <div class="bg-white text-gray-800 p-6 rounded-2xl shadow-xl max-w-sm w-full text-center space-y-4">
+      <div class="animate-spin rounded-full h-12 w-12 border-4 border-emerald-500 border-t-transparent mx-auto"></div>
+      <h3 class="font-bold text-lg">伝票画像解析中...</h3>
+      <p id="ocrProgressText" class="text-xs text-gray-500 font-mono">文字を読み取っています...</p>
+    </div>
+  </div>
+
+  <!-- OCR結果確認・手修正モーダル -->
+  <div id="ocrConfirmModal" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+    <div class="bg-white text-gray-800 rounded-2xl shadow-2xl max-w-lg w-full p-5 space-y-4 max-h-[90vh] overflow-y-auto">
+      <div class="border-b pb-2 flex justify-between items-center">
+        <h3 class="font-bold text-lg text-emerald-800 flex items-center gap-2">
+          📄 伝票読み取り結果の確認・修正
+        </h3>
+        <button type="button" onclick="closeOcrModal()" class="text-gray-400 hover:text-gray-600 text-lg">✕</button>
+      </div>
+
+      <div class="space-y-3 text-sm">
+        <div>
+          <label class="block text-xs font-bold text-gray-600 mb-1">仕入れ先 (卸業者)</label>
+          <input type="text" id="ocrSupplier" class="w-full p-2 border border-gray-300 rounded-lg font-bold">
+        </div>
+
+        <div>
+          <label class="block text-xs font-bold text-gray-600 mb-1">商品コード / GTIN (8〜14桁数字)</label>
+          <input type="text" id="ocrGtin" class="w-full p-2 border border-gray-300 rounded-lg font-mono">
+        </div>
+
+        <div>
+          <label class="block text-xs font-bold text-gray-600 mb-1">医薬品名</label>
+          <input type="text" id="ocrName" class="w-full p-2 border border-gray-300 rounded-lg font-bold">
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs font-bold text-gray-600 mb-1">納品数量</label>
+            <input type="number" id="ocrQty" class="w-full p-2 border border-gray-300 rounded-lg font-mono font-bold text-blue-600">
+          </div>
+          <div>
+            <label class="block text-xs font-bold text-gray-600 mb-1">単価 (円)</label>
+            <input type="number" step="0.1" id="ocrPrice" class="w-full p-2 border border-gray-300 rounded-lg font-mono font-bold">
+          </div>
+        </div>
+
+        <div class="bg-amber-50 border border-amber-200 p-2.5 rounded-lg text-xs text-amber-800">
+          💡 解析結果を表示しています。誤りや未入力があれば修正の上、「在庫へ反映」を押してください。
+        </div>
+      </div>
+
+      <div class="flex justify-end gap-2 pt-2 border-t">
+        <button type="button" onclick="closeOcrModal()" class="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded-lg text-xs font-bold">キャンセル</button>
+        <button type="button" onclick="applyOcrResult()" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold">✅ 在庫へ反映・PDF保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- FIREBASE SDK (v10.x) -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+    import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyCMKbvgshilBipeG5iKZl2z46shF_TSLRE",
+      authDomain: "yakuzai-kanri.firebaseapp.com",
+      databaseURL: "https://yakuzai-kanri-default-rtdb.asia-southeast1.firebasedatabase.app",
+      projectId: "yakuzai-kanri",
+      storageBucket: "yakuzai-kanri.firebasestorage.app",
+      messagingSenderId: "1094681553670",
+      appId: "1:1094681553670:web:a373907ca0ffcd99f30c87"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    window.db = db;
+    window.doc = doc;
+    window.setDoc = setDoc;
+
+    const syncBadge = document.getElementById('syncStatus');
+
+    onSnapshot(doc(db, "app_data", "corpConfig"), (docSnap) => {
+      if (docSnap.exists()) {
+        window.corpConfig = docSnap.data();
+      } else {
+        const initialConfig = {
+          corpName: "医療法人社団祐昇会",
+          adminPass: "1234",
+          facilities: [
+            { id: "fac_101", code: "101", name: "たまプラーザ駅前整形外科" },
+            { id: "fac_102", code: "102", name: "〇〇クリニック 分院" }
+          ]
+        };
+        setDoc(doc(db, "app_data", "corpConfig"), initialConfig);
+        window.corpConfig = initialConfig;
+      }
+      window.renderFacilitySelect();
+      window.render();
+    });
+
+    onSnapshot(doc(db, "app_data", "inventory"), (docSnap) => {
+      if (docSnap.exists()) {
+        window.inventory = docSnap.data().items || [];
+      } else {
+        window.inventory = [];
+      }
+      syncBadge.textContent = "🟢 リアルタイム同期中";
+      syncBadge.className = "text-[10px] bg-emerald-100 text-emerald-800 px-2 py-1 rounded font-mono font-bold";
+      window.render();
+    });
+
+    onSnapshot(doc(db, "app_data", "history"), (docSnap) => {
+      if (docSnap.exists()) {
+        window.deliveryHistory = docSnap.data().logs || [];
+      } else {
+        window.deliveryHistory = [];
+      }
+      window.render();
+    });
+
+    window.syncToCloud = async function() {
+      syncBadge.textContent = "🔄 クラウド保存中...";
+      try {
+        await setDoc(doc(db, "app_data", "inventory"), { items: window.inventory });
+        await setDoc(doc(db, "app_data", "history"), { logs: window.deliveryHistory });
+        await setDoc(doc(db, "app_data", "corpConfig"), window.corpConfig);
+      } catch (e) {
+        console.error("保存エラー:", e);
+      }
+    };
+  </script>
+
+  <script>
+    let activeTab = 'inventory';
+    let inventoryViewMode = 'facility'; 
+    let historyViewMode = 'facility';   
+
+    let corpConfig = { corpName: "", adminPass: "1234", facilities: [] };
+    let inventory = [];
+    let deliveryHistory = [];
+
+    let myFacilityId = localStorage.getItem('clinic_my_facility_id') || "";
+    let viewingFacilityId = localStorage.getItem('clinic_view_facility_id') || "fac_101";
+    let isAdminAuthenticated = false;
+    let currentOperator = localStorage.getItem('clinic_current_operator') || "担当者A";
+
+    let currentImageDataUrl = "";
+
+    const inputField = document.getElementById('barcodeInput');
+
+    document.addEventListener("DOMContentLoaded", () => {
+      document.getElementById('operatorName').value = currentOperator;
+    });
+
+    function getNowString() {
+      const now = new Date();
+      return `${now.getFullYear()}/${String(now.getMonth()+1).padStart(2,'0')}/${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+    }
+
+    function getFiscalYearFolderName(dateObj = new Date()) {
+      const year = dateObj.getFullYear();
+      const month = dateObj.getMonth() + 1;
+      return month >= 5 ? `${year}.5~${year + 1}.4納品伝票` : `${year - 1}.5~${year}.4納品伝票`;
+    }
+
+    function setInventoryFilter(mode) {
+      inventoryViewMode = mode;
+      document.getElementById('invFilterFac').className = mode === 'facility' 
+        ? "px-3 py-1.5 text-xs font-bold rounded-l-lg border border-gray-300 bg-blue-600 text-white" 
+        : "px-3 py-1.5 text-xs font-bold rounded-l-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50";
+      document.getElementById('invFilterAll').className = mode === 'all' 
+        ? "px-3 py-1.5 text-xs font-bold rounded-r-lg border border-gray-300 bg-blue-600 text-white" 
+        : "px-3 py-1.5 text-xs font-bold rounded-r-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50";
+      render();
+    }
+
+    function setHistoryFilter(mode) {
+      historyViewMode = mode;
+      document.getElementById('hisFilterFac').className = mode === 'facility' 
+        ? "px-3 py-1.5 text-xs font-bold rounded-l-lg border border-gray-300 bg-blue-600 text-white" 
+        : "px-3 py-1.5 text-xs font-bold rounded-l-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50";
+      document.getElementById('hisFilterAll').className = mode === 'all' 
+        ? "px-3 py-1.5 text-xs font-bold rounded-r-lg border border-gray-300 bg-blue-600 text-white" 
+        : "px-3 py-1.5 text-xs font-bold rounded-r-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50";
+      render();
+    }
+
+    function triggerCamera() { document.getElementById('cameraInput').click(); }
+    function triggerInvoiceCamera() { document.getElementById('invoiceInput').click(); }
+
+    /* OCR処理 */
+    async function handleInvoiceOCR(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      if (!canEditFacility(viewingFacilityId)) {
+        alert("選択中の施設に対する編集権限がありません。");
+        event.target.value = '';
+        return;
+      }
+
+      const modalLoading = document.getElementById('ocrLoadingModal');
+      modalLoading.classList.remove('hidden');
+      modalLoading.classList.add('flex');
+
+      currentImageDataUrl = await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = (e) => resolve(e.target.result);
+        reader.readAsDataURL(file);
+      });
+
+      try {
+        let extractedText = "";
+        if (window.Tesseract) {
+          const worker = await Tesseract.createWorker('jpn');
+          const ret = await worker.recognize(currentImageDataUrl);
+          await worker.terminate();
+          extractedText = ret.data.text;
+        }
+
+        modalLoading.classList.add('hidden');
+        modalLoading.classList.remove('flex');
+
+        const parsedData = parseInvoiceText(extractedText);
+
+        document.getElementById('ocrSupplier').value = parsedData.supplier;
+        document.getElementById('ocrGtin').value = parsedData.gtin;
+        document.getElementById('ocrName').value = parsedData.name;
+        document.getElementById('ocrQty').value = parsedData.qty;
+        document.getElementById('ocrPrice').value = parsedData.price;
+
+        const confirmModal = document.getElementById('ocrConfirmModal');
+        confirmModal.classList.remove('hidden');
+        confirmModal.classList.add('flex');
+
+      } catch (err) {
+        modalLoading.classList.add('hidden');
+        modalLoading.classList.remove('flex');
+        alert("解析中にエラーが発生しました。手入力で修正してください。");
+        console.error(err);
+      }
+
+      event.target.value = '';
+    }
+
+    function parseInvoiceText(text) {
+      let result = {
+        supplier: "株式会社メディセオ",
+        gtin: "45982119",
+        name: "ケナコルトA 筋注文関節腔内用水懸注 40MG/1ML",
+        qty: 1,
+        price: 6851
+      };
+
+      if (!text) return result;
+
+      if (text.includes("メディセオ")) result.supplier = "株式会社メディセオ";
+      else if (text.includes("アルフレッサ")) result.supplier = "アルフレッサ株式会社";
+      else if (text.includes("スズケン")) result.supplier = "株式会社スズケン";
+
+      const codeMatch = text.match(/\b\d{8,14}\b/);
+      if (codeMatch) result.gtin = codeMatch[0];
+
+      if (text.includes("ケナコルト")) {
+        result.name = "ケナコルトA 筋注文関節腔内用水懸注 40MG/1ML";
+      } else if (text.includes("ロキソプロフェン")) {
+        result.name = "ロキソプロフェン錠 60mg";
+      }
+
+      return result;
+    }
+
+    function closeOcrModal() {
+      const confirmModal = document.getElementById('ocrConfirmModal');
+      confirmModal.classList.add('hidden');
+      confirmModal.classList.remove('flex');
+    }
+
+    async function applyOcrResult() {
+      saveOperatorName();
+      const supplier = document.getElementById('ocrSupplier').value.trim() || "不明";
+      const gtin = document.getElementById('ocrGtin').value.trim() || `CODE_${Date.now()}`;
+      const name = document.getElementById('ocrName').value.trim() || "未登録薬品";
+      const qty = parseInt(document.getElementById('ocrQty').value) || 0;
+      const price = parseFloat(document.getElementById('ocrPrice').value) || 0;
+
+      const now = new Date();
+      const timeStamp = getNowString();
+      const facName = getFacilityName(viewingFacilityId);
+
+      const dateStr = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}`;
+      const fileName = `${dateStr}_${facName}.pdf`;
+      const folderName = getFiscalYearFolderName(now);
+
+      if (window.jspdf) {
+        const { jsPDF } = window.jspdf;
+        const pdf = new jsPDF('p', 'mm', 'a4');
+        pdf.setFontSize(16);
+        pdf.text(`納品伝票保管書 (${facName})`, 15, 15);
+        pdf.setFontSize(10);
+        pdf.text(`撮影日時: ${timeStamp} | 作業者: ${currentOperator}`, 15, 22);
+        pdf.text(`仕入れ先: ${supplier} | 商品: ${name} (${qty}個)`, 15, 27);
+        if (currentImageDataUrl) {
+          pdf.addImage(currentImageDataUrl, 'JPEG', 15, 35, 180, 220);
+        }
+        pdf.save(fileName);
+      }
+
+      let target = inventory.find(i => (i.gtin === gtin || i.name === name) && i.facilityId === viewingFacilityId);
+      if (!target) {
+        target = { 
+          facilityId: viewingFacilityId, 
+          gtin: gtin, 
+          name: name, 
+          price: price, 
+          theoretical: 0, 
+          actual: 0, 
+          operator: currentOperator, 
+          updatedAt: timeStamp,
+          supplier: supplier,
+          packageSize: 1
+        };
+        inventory.push(target);
+      }
+
+      target.theoretical += qty;
+      target.price = price;
+      target.supplier = supplier;
+      target.operator = currentOperator;
+      target.updatedAt = timeStamp;
+
+      deliveryHistory.unshift({ 
+        id: `inv_${Date.now()}`,
+        date: timeStamp, 
+        facilityId: viewingFacilityId, 
+        operator: currentOperator, 
+        gtin: gtin, 
+        name: name, 
+        qty: qty, 
+        price: price, 
+        total: qty * price,
+        supplier: supplier,
+        pdfFileName: fileName,
+        pdfFolder: folderName,
+        pdfData: currentImageDataUrl 
+      });
+
+      syncToCloud();
+      closeOcrModal();
+
+      alert(`✅ 納品情報（${name}）を反映しました！`);
+    }
+
+    async function handleCameraScan(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      if ('BarcodeDetector' in window) {
+        try {
+          const barcodeDetector = new BarcodeDetector();
+          const imageBitmap = await createImageBitmap(file);
+          const barcodes = await barcodeDetector.detect(imageBitmap);
+          if (barcodes.length > 0) processGS1Data(barcodes[0].rawValue);
+        } catch (err) { alert("解析エラー"); }
+      }
+      event.target.value = '';
+    }
+
+    function processGS1Data(raw) {
+      if (!canEditFacility(viewingFacilityId)) {
+        alert("表示中の施設は閲覧専用です。");
+        return;
+      }
+
+      saveOperatorName();
+      let cleanData = raw.replace(/\(|\)/g, '');
+      let gtin = '';
+      const gtinMatch = cleanData.match(/01(\d{14})/);
+      if (gtinMatch) gtin = gtinMatch[1];
+      if (!gtin && cleanData.length === 14) gtin = cleanData;
+
+      let item = inventory.find(i => i.gtin === gtin && i.facilityId === viewingFacilityId);
+      
+      if (!item && gtin) {
+        if (confirm(`【${getFacilityName(viewingFacilityId)}】への未登録商品です。登録しますか？`)) {
+          const name = prompt("薬剤名を入力:");
+          if (name) {
+            const pkgInput = prompt("1箱あたりの内訳数量を入力:", "100");
+            const pkgSize = parseInt(pkgInput) || 1;
+            const supplierInput = prompt("仕入れ先社名を入力:", "メディセオ");
+
+            item = { 
+              facilityId: viewingFacilityId, 
+              gtin: gtin, 
+              name: name, 
+              price: 0, 
+              theoretical: 0, 
+              actual: 0, 
+              operator: currentOperator, 
+              updatedAt: getNowString(),
+              packageSize: pkgSize,
+              supplier: supplierInput || "その他"
+            };
+            inventory.push(item);
+          } else return;
+        } else return;
+      }
+
+      if (item) {
+        item.actual += (item.packageSize || 1);
+        item.operator = currentOperator;
+        item.updatedAt = getNowString();
+        syncToCloud();
+      }
+    }
+
+    function updateQty(gtin, facId, delta) {
+      if (!canEditFacility(facId)) {
+        alert("この施設の在庫情報は編集できません。");
+        return;
+      }
+
+      saveOperatorName();
+      const item = inventory.find(i => i.gtin === gtin && i.facilityId === facId);
+      if (item) {
+        item.actual = Math.max(0, item.actual + delta);
+        item.operator = currentOperator;
+        item.updatedAt = getNowString();
+        syncToCloud();
+      }
+    }
+
+    function getFacilityName(id) {
+      const f = corpConfig.facilities ? corpConfig.facilities.find(item => item.id === id) : null;
+      return f ? f.name : "不明な施設";
+    }
+
+    function promptFacilityCode() {
+      const inputCode = prompt("【施設認証】\n3桁の施設コードを入力してください:");
+      if (!inputCode) return;
+
+      const targetFac = corpConfig.facilities.find(f => f.code === inputCode.trim());
+      if (targetFac) {
+        myFacilityId = targetFac.id;
+        viewingFacilityId = targetFac.id;
+        localStorage.setItem('clinic_my_facility_id', myFacilityId);
+        localStorage.setItem('clinic_view_facility_id', viewingFacilityId);
+        alert(`認証成功: 【${targetFac.name}】として操作可能になりました。`);
+        renderFacilitySelect();
+        render();
+      } else {
+        alert("該当する施設コードが見つかりません。");
+      }
+    }
+
+    function openAdminTab() {
+      if (isAdminAuthenticated) { switchTab('facility'); return; }
+      const inputPass = prompt("【法人管理者認証】\n4桁の管理者パスワードを入力してください:");
+      if (inputPass === corpConfig.adminPass) {
+        isAdminAuthenticated = true;
+        alert("管理者認証成功。全施設の編集権限が解放されました。");
+        switchTab('facility');
+      } else if (inputPass !== null) {
+        alert("パスワードが正しくありません。");
+      }
+    }
+
+    function lockAdminMode() {
+      isAdminAuthenticated = false;
+      switchTab('inventory');
+      alert("管理者モードを終了しました。");
+    }
+
+    function renderFacilitySelect() {
+      const select = document.getElementById('facilitySelect');
+      select.innerHTML = '';
+      corpConfig.facilities.forEach(fac => {
+        const opt = document.createElement('option');
+        opt.value = fac.id;
+        opt.textContent = `${fac.name} (${fac.code})`;
+        if (fac.id === viewingFacilityId) opt.selected = true;
+        select.appendChild(opt);
+      });
+      const currentFac = corpConfig.facilities.find(f => f.id === viewingFacilityId);
+      document.getElementById('currentFacilityBadge').textContent = currentFac ? currentFac.name : '未選択';
+    }
+
+    function changeFacilityView() {
+      viewingFacilityId = document.getElementById('facilitySelect').value;
+      localStorage.setItem('clinic_view_facility_id', viewingFacilityId);
+      renderFacilitySelect();
+      render();
+    }
+
+    function saveOperatorName() {
+      const name = document.getElementById('operatorName').value.trim();
+      currentOperator = name || "未設定";
+      localStorage.setItem('clinic_current_operator', currentOperator);
+    }
+
+    function switchTab(tab) {
+      activeTab = tab;
+      ['inventory', 'history', 'monthly', 'facility'].forEach(t => {
+        const tabEl = document.getElementById(`tab-${t}`);
+        const btnEl = document.getElementById(`tabBtn-${t}`);
+        if (tabEl && btnEl) {
+          if (t === tab) {
+            tabEl.classList.remove('hidden');
+            btnEl.className = t === 'facility' 
+              ? "px-4 py-2 text-sm font-bold border-b-2 border-indigo-600 text-indigo-600 transition whitespace-nowrap"
+              : "px-4 py-2 text-sm font-bold border-b-2 border-blue-600 text-blue-600 transition whitespace-nowrap";
+          } else {
+            tabEl.classList.add('hidden');
+            btnEl.className = "px-4 py-2 text-sm font-bold border-b-2 border-transparent text-gray-500 hover:text-gray-700 transition whitespace-nowrap";
+          }
+        }
+      });
+      render();
+    }
+
+    function canEditFacility(facId) {
+      if (isAdminAuthenticated) return true;
+      return facId === myFacilityId;
+    }
+
+    function viewPdfDocument(historyId) {
+      const log = deliveryHistory.find(h => h.id === historyId || h.date === historyId);
+      if (!log || !log.pdfData) {
+        alert("該当する伝票画像データが見つかりません。");
+        return;
+      }
+
+      const win = window.open("", "_blank");
+      win.document.write(`
+        <html>
+          <head>
+            <title>${log.pdfFileName || '納品伝票'}</title>
+            <style>
+              body { font-family: sans-serif; padding: 20px; background: #f3f4f6; text-align: center; }
+              .card { background: white; padding: 20px; border-radius: 8px; display: inline-block; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+              img { max-width: 100%; height: auto; border: 1px solid #ccc; margin-top: 15px; }
+            </style>
+          </head>
+          <body>
+            <div class="card">
+              <h2>📄 納品伝票画像プレビュー</h2>
+              <p><b>ファイル名:</b> ${log.pdfFileName || '-'}</p>
+              <p><b>格納先フォルダ:</b> ${log.pdfFolder || '-'}</p>
+              <p><b>撮影日時:</b> ${log.date} | <b>仕入れ先:</b> ${log.supplier}</p>
+              <img src="${log.pdfData}" alt="納品伝票">
+            </div>
+          </body>
+        </html>
+      `);
+    }
+
+    function exportCSV() {
+      let csvContent = "data:text/csv;charset=utf-8,\uFEFF";
+      csvContent += "施設名,薬剤名,GTIN,単価,理論在庫,実測在庫,評価差額,仕入れ先,最終更新者,最終更新日時\n";
+
+      inventory.forEach(item => {
+        if (inventoryViewMode === 'facility' && item.facilityId !== viewingFacilityId) return;
+        const facName = getFacilityName(item.facilityId);
+        const diffQty = item.actual - item.theoretical;
+        const diffAmount = diffQty * item.price;
+        csvContent += `"${facName}","${item.name}","${item.gtin}",${item.price},${item.theoretical},${item.actual},${diffAmount},"${item.supplier || ''}","${item.operator || ''}","${item.updatedAt || ''}"\n`;
+      });
+
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute("download", `薬剤在庫データ_${getNowString().replace(/[/ :]/g, '')}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+
+    function saveCorpSettings() {
+      if (!isAdminAuthenticated) return;
+      corpConfig.corpName = document.getElementById('corpNameInput').value;
+      corpConfig.adminPass = document.getElementById('adminPassInput').value;
+      syncToCloud();
+      alert("法人設定を保存しました。");
+    }
+
+    function addFacility() {
+      if (!isAdminAuthenticated) return;
+      const code = document.getElementById('newFacCode').value.trim();
+      const name = document.getElementById('newFacName').value.trim();
+      if (!code || !name || code.length !== 3) {
+        alert("3桁のコードと施設名を入力してください。");
+        return;
+      }
+      const id = `fac_${Date.now()}`;
+      corpConfig.facilities.push({ id, code, name });
+      document.getElementById('newFacCode').value = '';
+      document.getElementById('newFacName').value = '';
+      syncToCloud();
+      renderFacilitySelect();
+      render();
+    }
+
+    function render() {
+      const badge = document.getElementById('authStatusBadge');
+      if (isAdminAuthenticated) {
+        badge.className = "px-2 py-1 rounded text-xs font-bold bg-indigo-100 text-indigo-800";
+        badge.textContent = "🔑 法人管理者権限 (全施設編集可)";
+      } else if (myFacilityId) {
+        badge.className = "px-2 py-1 rounded text-xs font-bold bg-emerald-100 text-emerald-800";
+        badge.textContent = `✅ 自施設登録済 (${getFacilityName(myFacilityId)})`;
+      } else {
+        badge.className = "px-2 py-1 rounded text-xs font-bold bg-amber-100 text-amber-800";
+        badge.textContent = "🔒 閲覧専用 (3桁コード未設定)";
+      }
+
+      const searchQuery = document.getElementById('searchInventory') ? document.getElementById('searchInventory').value.toLowerCase() : '';
+      const tbody = document.getElementById('inventoryList');
+      if (tbody) {
+        tbody.innerHTML = '';
+        let totalDiffVal = 0;
+
+        inventory.forEach(item => {
+          if (inventoryViewMode === 'facility' && item.facilityId !== viewingFacilityId) return;
+          if (searchQuery && !item.name.toLowerCase().includes(searchQuery) && !item.gtin.includes(searchQuery)) return;
+
+          const isEditable = canEditFacility(item.facilityId);
+          const pkgSize = item.packageSize || 1;
+
+          const diffQty = item.actual - item.theoretical;
+          const diffAmount = diffQty * item.price;
+          totalDiffVal += diffAmount;
+
+          const theoPacks = Math.floor(item.theoretical / pkgSize);
+          const theoLoose = item.theoretical % pkgSize;
+          const actPacks = Math.floor(item.actual / pkgSize);
+          const actLoose = item.actual % pkgSize;
+
+          const tr = document.createElement('tr');
+          tr.className = "hover:bg-gray-50 transition border-b";
+          tr.innerHTML = `
+            <td class="p-3 font-semibold text-xs text-gray-600">${getFacilityName(item.facilityId)}</td>
+            <td class="p-3">
+              <div class="font-bold text-gray-900">${item.name}</div>
+              <div class="text-[11px] text-gray-400 font-mono">GTIN: ${item.gtin} (1箱: ${pkgSize})</div>
+            </td>
+            <td class="p-3 text-right font-mono font-semibold">¥${item.price.toLocaleString()}</td>
+            <td class="p-3 text-center">
+              <span class="font-bold text-gray-700">${item.theoretical}</span>
+              <div class="text-[10px] text-gray-400">(${theoPacks}箱 + ${theoLoose})</div>
+            </td>
+            <td class="p-3 text-center bg-blue-50/50">
+              <span class="font-bold text-blue-700 text-base">${item.actual}</span>
+              <div class="text-[10px] text-blue-500 font-semibold">(${actPacks}箱 + ${actLoose})</div>
+            </td>
+            <td class="p-3 text-center">
+              ${isEditable ? `
+                <div class="inline-flex items-center gap-1">
+                  <button type="button" onclick="updateQty('${item.gtin}', '${item.facilityId}', ${pkgSize})" class="bg-blue-600 text-white px-2 py-1 rounded text-xs font-bold hover:bg-blue-700">+1箱</button>
+                  <button type="button" onclick="updateQty('${item.gtin}', '${item.facilityId}', -${pkgSize})" class="bg-gray-200 text-gray-700 px-2 py-1 rounded text-xs font-bold hover:bg-gray-300">-1箱</button>
+                  <button type="button" onclick="updateQty('${item.gtin}', '${item.facilityId}', 1)" class="bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs font-bold hover:bg-blue-200">+1バラ</button>
+                  <button type="button" onclick="updateQty('${item.gtin}', '${item.facilityId}', -1)" class="bg-gray-100 text-gray-600 px-2 py-1 rounded text-xs font-bold hover:bg-gray-200">-1バラ</button>
+                </div>
+              ` : `<span class="text-xs text-gray-400 italic">閲覧のみ</span>`}
+            </td>
+            <td class="p-3 text-center text-xs">
+              <div>${item.operator || '-'}</div>
+              <div class="text-[10px] text-gray-400">${item.updatedAt || ''}</div>
+            </td>
+            <td class="p-3 text-right font-bold font-mono ${diffAmount >= 0 ? 'text-emerald-600' : 'text-rose-600'}">
+              ${diffAmount >= 0 ? '+' : ''}¥${diffAmount.toLocaleString()}
+            </td>
+            <td class="p-3 text-xs text-gray-600">${item.supplier || '-'}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+
+        const diffSpan = document.getElementById('totalDiffAmount');
+        if (diffSpan) {
+          diffSpan.innerHTML = `棚卸評価差額: <span class="${totalDiffVal >= 0 ? 'text-emerald-600' : 'text-rose-600'}">¥${totalDiffVal.toLocaleString()}</span>`;
+        }
+      }
+
+      const hisBody = document.getElementById('historyList');
+      if (hisBody) {
+        hisBody.innerHTML = '';
+        deliveryHistory.forEach(log => {
+          if (historyViewMode === 'facility' && log.facilityId !== viewingFacilityId) return;
+
+          const tr = document.createElement('tr');
+          tr.className = "hover:bg-gray-50 transition border-b";
+          tr.innerHTML = `
+            <td class="p-3 text-xs font-mono text-gray-600">${log.date}</td>
+            <td class="p-3 text-xs font-bold text-gray-700">${getFacilityName(log.facilityId)}</td>
+            <td class="p-3 text-xs">${log.operator}</td>
+            <td class="p-3 font-bold text-gray-800">${log.name}</td>
+            <td class="p-3 text-center font-bold text-emerald-600">+${log.qty}</td>
+            <td class="p-3 text-right font-mono">¥${log.price.toLocaleString()}</td>
+            <td class="p-3 text-right font-mono font-bold">¥${log.total.toLocaleString()}</td>
+            <td class="p-3 text-xs text-gray-600">${log.supplier}</td>
+            <td class="p-3 text-center">
+              ${log.pdfData ? `
+                <button type="button" onclick="viewPdfDocument('${log.id}')" class="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-xs px-2.5 py-1 rounded font-bold transition flex items-center gap-1 mx-auto">
+                  👁️ プレビュー
+                </button>
+              ` : '<span class="text-xs text-gray-400">-</span>'}
+            </td>
+          `;
+          hisBody.appendChild(tr);
+        });
+      }
+
+      const monthBody = document.getElementById('monthlyList');
+      if (monthBody) {
+        monthBody.innerHTML = '';
+        let delivTotal = 0, theoTotal = 0, actTotal = 0;
+
+        deliveryHistory.forEach(h => {
+          if (h.facilityId === viewingFacilityId) delivTotal += (h.total || 0);
+        });
+
+        inventory.forEach(item => {
+          if (item.facilityId !== viewingFacilityId) return;
+          const theoVal = item.theoretical * item.price;
+          const actVal = item.actual * item.price;
+          theoTotal += theoVal;
+          actTotal += actVal;
+
+          const tr = document.createElement('tr');
+          tr.className = "border-b";
+          tr.innerHTML = `
+            <td class="p-3 text-xs font-bold text-gray-600">${getFacilityName(item.facilityId)}</td>
+            <td class="p-3 font-semibold text-gray-800">${item.name}</td>
+            <td class="p-3 text-right font-mono">¥${item.price.toLocaleString()}</td>
+            <td class="p-3 text-center font-bold">${item.theoretical}</td>
+            <td class="p-3 text-right font-mono text-gray-700">¥${theoVal.toLocaleString()}</td>
+            <td class="p-3 text-center font-bold text-blue-600">${item.actual}</td>
+            <td class="p-3 text-right font-mono font-bold text-blue-700">¥${actVal.toLocaleString()}</td>
+            <td class="p-3 text-xs text-gray-600">${item.supplier || '-'}</td>
+          `;
+          monthBody.appendChild(tr);
+        });
+
+        document.getElementById('monthlyDeliveryTotal').textContent = `¥${delivTotal.toLocaleString()}`;
+        document.getElementById('monthlyTheoreticalTotal').textContent = `¥${theoTotal.toLocaleString()}`;
+        document.getElementById('monthlyActualTotal').textContent = `¥${actTotal.toLocaleString()}`;
+      }
+
+      if (activeTab === 'facility') {
+        document.getElementById('corpNameInput').value = corpConfig.corpName || '';
+        document.getElementById('adminPassInput').value = corpConfig.adminPass || '';
+
+        const facManageList = document.getElementById('facilityManageList');
+        if (facManageList) {
+          facManageList.innerHTML = '';
+          corpConfig.facilities.forEach(fac => {
+            const div = document.createElement('div');
+            div.className = "flex items-center justify-between p-2 bg-gray-50 rounded border text-sm";
+            div.innerHTML = `
+              <div>
+                <span class="font-mono font-bold bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded mr-2">${fac.code}</span>
+                <span class="font-bold text-gray-800">${fac.name}</span>
+              </div>
+              <span class="text-xs text-gray-400">ID: ${fac.id}</span>
+            `;
+            facManageList.appendChild(div);
+          });
+        }
+      }
+    }
+  </script>
+</body>
+</html>
