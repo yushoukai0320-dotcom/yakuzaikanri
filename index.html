@@ -339,7 +339,7 @@
 
     const syncBadge = document.getElementById('syncStatus');
 
-    // 法人・施設設定のリアルタイム同期 (永続化の強化)
+    // 法人・施設設定の読み込み（安全に上書きを防止）
     onSnapshot(doc(db, "app_data", "corpConfig"), (docSnap) => {
       if (docSnap.exists()) {
         window.corpConfig = docSnap.data();
@@ -382,8 +382,8 @@
     window.syncToCloud = async function() {
       syncBadge.textContent = "🔄 クラウド保存中...";
       try {
-        await setDoc(doc(db, "app_data", "inventory"), { items: window.inventory });
-        await setDoc(doc(db, "app_data", "history"), { logs: window.deliveryHistory });
+        await setDoc(doc(db, "app_data", "inventory"), { items: window.inventory || [] });
+        await setDoc(doc(db, "app_data", "history"), { logs: window.deliveryHistory || [] });
         await setDoc(doc(db, "app_data", "corpConfig"), window.corpConfig);
         syncBadge.textContent = "🟢 リアルタイム同期中";
         syncBadge.className = "text-[10px] bg-emerald-100 text-emerald-800 px-2 py-1 rounded font-mono font-bold";
@@ -400,7 +400,7 @@
     let inventoryViewMode = 'facility'; 
     let historyViewMode = 'facility';   
 
-    let corpConfig = { corpName: "", adminPass: "1234", facilities: [] };
+    let corpConfig = { corpName: "医療法人社団祐昇会", adminPass: "1234", facilities: [] };
     let inventory = [];
     let deliveryHistory = [];
 
@@ -694,15 +694,15 @@
     }
 
     function getFacilityName(id) {
-      const f = corpConfig.facilities ? corpConfig.facilities.find(item => item.id === id) : null;
-      return f ? f.name : "不明な施設";
+      const f = (window.corpConfig && window.corpConfig.facilities) ? window.corpConfig.facilities.find(item => item.id === id) : null;
+      return f ? f.name : "未選択・不明";
     }
 
     function promptFacilityCode() {
       const inputCode = prompt("【施設認証】\n3桁の施設コードを入力してください:");
       if (!inputCode) return;
 
-      const targetFac = corpConfig.facilities ? corpConfig.facilities.find(f => f.code === inputCode.trim()) : null;
+      const targetFac = (window.corpConfig && window.corpConfig.facilities) ? window.corpConfig.facilities.find(f => f.code === inputCode.trim()) : null;
       if (targetFac) {
         myFacilityId = targetFac.id;
         viewingFacilityId = targetFac.id;
@@ -719,7 +719,8 @@
     function openAdminTab() {
       if (isAdminAuthenticated) { switchTab('facility'); return; }
       const inputPass = prompt("【法人管理者認証】\n4桁の管理者パスワードを入力してください:");
-      if (inputPass === corpConfig.adminPass) {
+      const currentPass = (window.corpConfig && window.corpConfig.adminPass) ? window.corpConfig.adminPass : "1234";
+      if (inputPass === currentPass) {
         isAdminAuthenticated = true;
         alert("管理者認証成功。全施設の編集権限が解放されました。");
         switchTab('facility');
@@ -736,9 +737,10 @@
 
     function renderFacilitySelect() {
       const select = document.getElementById('facilitySelect');
+      if (!select) return;
       select.innerHTML = '';
-      if (corpConfig.facilities) {
-        corpConfig.facilities.forEach(fac => {
+      if (window.corpConfig && window.corpConfig.facilities) {
+        window.corpConfig.facilities.forEach(fac => {
           const opt = document.createElement('option');
           opt.value = fac.id;
           opt.textContent = `${fac.name} (${fac.code})`;
@@ -746,7 +748,7 @@
           select.appendChild(opt);
         });
       }
-      const currentFac = corpConfig.facilities ? corpConfig.facilities.find(f => f.id === viewingFacilityId) : null;
+      const currentFac = (window.corpConfig && window.corpConfig.facilities) ? window.corpConfig.facilities.find(f => f.id === viewingFacilityId) : null;
       document.getElementById('currentFacilityBadge').textContent = currentFac ? currentFac.name : '未選択';
     }
 
@@ -842,8 +844,9 @@
 
     function saveCorpSettings() {
       if (!isAdminAuthenticated) return;
-      corpConfig.corpName = document.getElementById('corpNameInput').value;
-      corpConfig.adminPass = document.getElementById('adminPassInput').value;
+      if (!window.corpConfig) window.corpConfig = {};
+      window.corpConfig.corpName = document.getElementById('corpNameInput').value;
+      window.corpConfig.adminPass = document.getElementById('adminPassInput').value;
       syncToCloud();
       alert("✅ 法人設定（パスワード・法人名）を更新してクラウド保存しました！");
     }
@@ -857,8 +860,9 @@
         return;
       }
       const id = `fac_${Date.now()}`;
-      if (!corpConfig.facilities) corpConfig.facilities = [];
-      corpConfig.facilities.push({ id, code, name });
+      if (!window.corpConfig) window.corpConfig = {};
+      if (!window.corpConfig.facilities) window.corpConfig.facilities = [];
+      window.corpConfig.facilities.push({ id, code, name });
       document.getElementById('newFacCode').value = '';
       document.getElementById('newFacName').value = '';
       syncToCloud();
@@ -1013,14 +1017,16 @@
       }
 
       if (activeTab === 'facility') {
-        document.getElementById('corpNameInput').value = corpConfig.corpName || '';
-        document.getElementById('adminPassInput').value = corpConfig.adminPass || '';
+        const corpNameInput = document.getElementById('corpNameInput');
+        const adminPassInput = document.getElementById('adminPassInput');
+        if (corpNameInput && window.corpConfig) corpNameInput.value = window.corpConfig.corpName || '';
+        if (adminPassInput && window.corpConfig) adminPassInput.value = window.corpConfig.adminPass || '';
 
         const facManageList = document.getElementById('facilityManageList');
         if (facManageList) {
           facManageList.innerHTML = '';
-          if (corpConfig.facilities) {
-            corpConfig.facilities.forEach(fac => {
+          if (window.corpConfig && window.corpConfig.facilities) {
+            window.corpConfig.facilities.forEach(fac => {
               const div = document.createElement('div');
               div.className = "flex items-center justify-between p-2 bg-gray-50 rounded border text-sm";
               div.innerHTML = `
