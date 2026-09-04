@@ -339,6 +339,7 @@
 
     const syncBadge = document.getElementById('syncStatus');
 
+    // 法人・施設設定のリアルタイム同期 (永続化の強化)
     onSnapshot(doc(db, "app_data", "corpConfig"), (docSnap) => {
       if (docSnap.exists()) {
         window.corpConfig = docSnap.data();
@@ -384,8 +385,12 @@
         await setDoc(doc(db, "app_data", "inventory"), { items: window.inventory });
         await setDoc(doc(db, "app_data", "history"), { logs: window.deliveryHistory });
         await setDoc(doc(db, "app_data", "corpConfig"), window.corpConfig);
+        syncBadge.textContent = "🟢 リアルタイム同期中";
+        syncBadge.className = "text-[10px] bg-emerald-100 text-emerald-800 px-2 py-1 rounded font-mono font-bold";
       } catch (e) {
         console.error("保存エラー:", e);
+        syncBadge.textContent = "⚠️ 保存エラー";
+        syncBadge.className = "text-[10px] bg-rose-100 text-rose-800 px-2 py-1 rounded font-mono font-bold";
       }
     };
   </script>
@@ -405,8 +410,6 @@
     let currentOperator = localStorage.getItem('clinic_current_operator') || "担当者A";
 
     let currentImageDataUrl = "";
-
-    const inputField = document.getElementById('barcodeInput');
 
     document.addEventListener("DOMContentLoaded", () => {
       document.getElementById('operatorName').value = currentOperator;
@@ -699,7 +702,7 @@
       const inputCode = prompt("【施設認証】\n3桁の施設コードを入力してください:");
       if (!inputCode) return;
 
-      const targetFac = corpConfig.facilities.find(f => f.code === inputCode.trim());
+      const targetFac = corpConfig.facilities ? corpConfig.facilities.find(f => f.code === inputCode.trim()) : null;
       if (targetFac) {
         myFacilityId = targetFac.id;
         viewingFacilityId = targetFac.id;
@@ -734,14 +737,16 @@
     function renderFacilitySelect() {
       const select = document.getElementById('facilitySelect');
       select.innerHTML = '';
-      corpConfig.facilities.forEach(fac => {
-        const opt = document.createElement('option');
-        opt.value = fac.id;
-        opt.textContent = `${fac.name} (${fac.code})`;
-        if (fac.id === viewingFacilityId) opt.selected = true;
-        select.appendChild(opt);
-      });
-      const currentFac = corpConfig.facilities.find(f => f.id === viewingFacilityId);
+      if (corpConfig.facilities) {
+        corpConfig.facilities.forEach(fac => {
+          const opt = document.createElement('option');
+          opt.value = fac.id;
+          opt.textContent = `${fac.name} (${fac.code})`;
+          if (fac.id === viewingFacilityId) opt.selected = true;
+          select.appendChild(opt);
+        });
+      }
+      const currentFac = corpConfig.facilities ? corpConfig.facilities.find(f => f.id === viewingFacilityId) : null;
       document.getElementById('currentFacilityBadge').textContent = currentFac ? currentFac.name : '未選択';
     }
 
@@ -840,7 +845,7 @@
       corpConfig.corpName = document.getElementById('corpNameInput').value;
       corpConfig.adminPass = document.getElementById('adminPassInput').value;
       syncToCloud();
-      alert("法人設定を保存しました。");
+      alert("✅ 法人設定（パスワード・法人名）を更新してクラウド保存しました！");
     }
 
     function addFacility() {
@@ -852,12 +857,14 @@
         return;
       }
       const id = `fac_${Date.now()}`;
+      if (!corpConfig.facilities) corpConfig.facilities = [];
       corpConfig.facilities.push({ id, code, name });
       document.getElementById('newFacCode').value = '';
       document.getElementById('newFacName').value = '';
       syncToCloud();
       renderFacilitySelect();
       render();
+      alert(`✅ 施設「${name}」を保存しました！`);
     }
 
     function render() {
@@ -1012,18 +1019,20 @@
         const facManageList = document.getElementById('facilityManageList');
         if (facManageList) {
           facManageList.innerHTML = '';
-          corpConfig.facilities.forEach(fac => {
-            const div = document.createElement('div');
-            div.className = "flex items-center justify-between p-2 bg-gray-50 rounded border text-sm";
-            div.innerHTML = `
-              <div>
-                <span class="font-mono font-bold bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded mr-2">${fac.code}</span>
-                <span class="font-bold text-gray-800">${fac.name}</span>
-              </div>
-              <span class="text-xs text-gray-400">ID: ${fac.id}</span>
-            `;
-            facManageList.appendChild(div);
-          });
+          if (corpConfig.facilities) {
+            corpConfig.facilities.forEach(fac => {
+              const div = document.createElement('div');
+              div.className = "flex items-center justify-between p-2 bg-gray-50 rounded border text-sm";
+              div.innerHTML = `
+                <div>
+                  <span class="font-mono font-bold bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded mr-2">${fac.code}</span>
+                  <span class="font-bold text-gray-800">${fac.name}</span>
+                </div>
+                <span class="text-xs text-gray-400">ID: ${fac.id}</span>
+              `;
+              facManageList.appendChild(div);
+            });
+          }
         }
       }
     }
